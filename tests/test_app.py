@@ -449,7 +449,12 @@ def test_check_slot_availability_handles_null_meetings(client, monkeypatch):
     assert resp.status_code == 201
 
 
-def test_check_slot_availability_handles_naive_and_malformed_start_times(client, monkeypatch):
+@pytest.mark.parametrize(
+    "raw_start",
+    ["not-an-iso-date", "2026-11-24T10:00:00"],
+    ids=["malformed_iso", "naive_iso"],
+)
+def test_check_slot_availability_handles_edge_start_time_format(client, monkeypatch, raw_start):
     test_client, _ = client
     monkeypatch.setattr(
         zoom.requests,
@@ -463,8 +468,7 @@ def test_check_slot_availability_handles_naive_and_malformed_start_times(client,
             200,
             {
                 "meetings": [
-                    {"topic": "Malformed", "start_time": "not-an-iso-date", "duration": 60},
-                    {"topic": "Naive", "start_time": "2026-11-24T10:00:00", "duration": 60},
+                    {"topic": "Edge Meeting", "start_time": raw_start, "duration": 60},
                 ]
             },
         ),
@@ -1130,7 +1134,7 @@ def test_get_appointment_omits_zoom_start_url_while_pay_returns_it(client, monke
 def test_delete_rejects_with_409_when_row_claimed_after_lookup_snapshot(client, monkeypatch):
     from app import db
 
-    test_client, db_file = client
+    test_client, _ = client
     _mock_zoom_happy_path(monkeypatch)
 
     c_resp = test_client.post(
@@ -1161,6 +1165,6 @@ def test_delete_rejects_with_409_when_row_claimed_after_lookup_snapshot(client, 
     assert d_resp.status_code == 409
 
     monkeypatch.undo()
-    persisted = real_lookup(sid, db_path=db_file)
-    assert persisted is not None
-    assert persisted["status"] == "payment_processing"
+    g_resp = test_client.get(f"/api/appointments/{sid}")
+    assert g_resp.status_code == 200
+    assert g_resp.get_json()["status"] == "payment_processing"
