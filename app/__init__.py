@@ -133,22 +133,34 @@ def create_app(test_config: dict | None = None) -> Flask:
         # Idempotent: return existing confirmed session without creating a duplicate meeting
         if row["status"] == "confirmed":
             return jsonify(AppointmentResponse.model_validate(row).model_dump()), 200
+        if row["status"] == "payment_processing":
+            return jsonify({"error": "El pago ya está siendo procesado."}), 409
 
-        token = zoom.get_access_token(body.credentials)
-        meeting = zoom.create_meeting(
-            access_token=token,
-            topic=f"Sesión con {row['client_name']}",
-            start_time_local=row["start_time_local"],
-            tz_name=row["timezone"],
-            duration_minutes=row["duration_minutes"],
-        )
-        updated = db.mark_appointment_confirmed(
-            session_id=row["session_id"],
-            zoom_meeting_id=str(meeting["id"]),
-            zoom_join_url=meeting["join_url"],
-            zoom_start_url=meeting["start_url"],
-            db_path=db_path,
-        )
+        if not db.claim_appointment_for_payment(row["session_id"], db_path=db_path):
+            latest = db.get_appointment_by_lookup(row["session_id"], db_path=db_path)
+            if latest and latest["status"] == "confirmed":
+                return jsonify(AppointmentResponse.model_validate(latest).model_dump()), 200
+            return jsonify({"error": "El pago ya está siendo procesado."}), 409
+
+        try:
+            token = zoom.get_access_token(body.credentials)
+            meeting = zoom.create_meeting(
+                access_token=token,
+                topic=f"Sesión con {row['client_name']}",
+                start_time_local=row["start_time_local"],
+                tz_name=row["timezone"],
+                duration_minutes=row["duration_minutes"],
+            )
+            updated = db.mark_appointment_confirmed(
+                session_id=row["session_id"],
+                zoom_meeting_id=str(meeting["id"]),
+                zoom_join_url=meeting["join_url"],
+                zoom_start_url=meeting["start_url"],
+                db_path=db_path,
+            )
+        except Exception:
+            db.release_payment_claim(row["session_id"], db_path=db_path)
+            raise
         return jsonify(AppointmentResponse.model_validate(updated).model_dump()), 200
 
     @app.delete("/api/appointments/<lookup_id>")

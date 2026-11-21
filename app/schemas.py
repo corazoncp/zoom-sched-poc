@@ -59,7 +59,7 @@ class AppointmentResponse(BaseModel):
     timezone: str
     duration_minutes: int = 60
     amount_usd: float
-    status: Literal["payment_pending", "confirmed"]
+    status: Literal["payment_pending", "payment_processing", "confirmed"]
     zoom_meeting_id: str | None = None
     zoom_join_url: str | None = None
     zoom_start_url: str | None = None

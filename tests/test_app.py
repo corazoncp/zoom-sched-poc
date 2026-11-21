@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from pathlib import Path
 import pytest
 
@@ -484,3 +485,72 @@ def test_duration_minutes_persisted_and_forwarded_to_zoom(client, monkeypatch):
     assert p_resp.get_json()["duration_minutes"] == 45
     assert len(captured_payloads) == 1
     assert captured_payloads[0]["duration"] == 45
+
+
+def test_concurrent_pay_creates_only_one_zoom_meeting(tmp_path: Path, monkeypatch):
+    db_file = tmp_path / "concurrent_pay.db"
+    app = create_app({"TESTING": True, "DB_PATH": str(db_file), "RATELIMIT_ENABLED": False})
+
+    create_calls = []
+    in_create = threading.Event()
+    allow_create_finish = threading.Event()
+
+    def fake_post(url, **kwargs):
+        if url == "https://zoom.us/oauth/token":
+            return FakeResponse(200, {"access_token": "mock_token"})
+        if url == "https://api.zoom.us/v2/users/me/meetings":
+            create_calls.append(kwargs.get("json"))
+            in_create.set()
+            assert allow_create_finish.wait(timeout=2.0)
+            return FakeResponse(
+                201,
+                {
+                    "id": 555666777,
+                    "join_url": "https://zoom.us/j/555666777",
+                    "start_url": "https://zoom.us/s/555666777?zak=abc",
+                },
+            )
+        raise AssertionError(f"Unexpected POST URL: {url}")
+
+    monkeypatch.setattr(zoom.requests, "post", fake_post)
+    monkeypatch.setattr(
+        zoom.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(200, {"meetings": []}),
+    )
+
+    with app.test_client() as tc:
+        c_resp = tc.post(
+            "/api/appointments",
+            json={
+                "credentials": SAMPLE_CREDS,
+                "client_name": "María Perez",
+                "start_time_local": "2026-11-25T15:00",
+            },
+        )
+        assert c_resp.status_code == 201
+        sid = c_resp.get_json()["session_id"]
+
+    statuses = []
+
+    def worker_1():
+        with app.test_client() as tc1:
+            r = tc1.post(f"/api/appointments/{sid}/pay", json={"credentials": SAMPLE_CREDS})
+            statuses.append(r.status_code)
+
+    def worker_2():
+        assert in_create.wait(timeout=2.0)
+        with app.test_client() as tc2:
+            r = tc2.post(f"/api/appointments/{sid}/pay", json={"credentials": SAMPLE_CREDS})
+            statuses.append(r.status_code)
+        allow_create_finish.set()
+
+    t1 = threading.Thread(target=worker_1)
+    t2 = threading.Thread(target=worker_2)
+    t1.start()
+    t2.start()
+    t1.join(timeout=3.0)
+    t2.join(timeout=3.0)
+
+    assert len(create_calls) == 1
+    assert sorted(statuses) == [200, 409]

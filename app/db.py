@@ -41,7 +41,7 @@ def init_db(db_path: Path | None = None) -> None:
                 timezone TEXT NOT NULL,
                 duration_minutes INTEGER NOT NULL DEFAULT 60,
                 amount_usd REAL NOT NULL,
-                status TEXT NOT NULL CHECK (status IN ('payment_pending', 'confirmed')),
+                status TEXT NOT NULL CHECK (status IN ('payment_pending', 'payment_processing', 'confirmed')),
                 zoom_meeting_id TEXT,
                 zoom_join_url TEXT,
                 zoom_start_url TEXT,
@@ -108,6 +108,33 @@ def get_appointment_by_lookup(lookup_id: str, db_path: Path | None = None) -> di
             (lookup_id, lookup_id),
         ).fetchone()
     return _row_to_dict(row)
+
+
+def claim_appointment_for_payment(session_id: str, db_path: Path | None = None) -> bool:
+    """Atomically claim a payment_pending appointment for Zoom meeting provisioning."""
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE appointments
+            SET status = 'payment_processing'
+            WHERE session_id = ? AND status = 'payment_pending'
+            """,
+            (session_id,),
+        )
+    return cursor.rowcount == 1
+
+
+def release_payment_claim(session_id: str, db_path: Path | None = None) -> None:
+    """Revert an in-flight payment_processing claim back to payment_pending."""
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE appointments
+            SET status = 'payment_pending'
+            WHERE session_id = ? AND status = 'payment_processing'
+            """,
+            (session_id,),
+        )
 
 
 def mark_appointment_confirmed(
