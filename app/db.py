@@ -20,7 +20,6 @@ def get_connection(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(target, timeout=10.0)
     conn.row_factory = sqlite3.Row
     try:
-        conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
         yield conn
         conn.commit()
@@ -31,6 +30,7 @@ def get_connection(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
 def init_db(db_path: Path | None = None) -> None:
     """Create the appointments table if it does not already exist."""
     with get_connection(db_path) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS appointments (

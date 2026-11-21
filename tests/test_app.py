@@ -413,3 +413,21 @@ def test_check_slot_availability_invalid_datetime_returns_400(client, monkeypatc
         },
     )
     assert resp.status_code == 400
+
+
+def test_db_init_sets_wal_once_not_on_every_connection(tmp_path: Path):
+    from app import db
+
+    db_file = tmp_path / "wal_test.db"
+    db.init_db(db_file)
+    with db.get_connection(db_file) as conn:
+        mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
+        assert mode.lower() == "wal"
+
+    raw_conn = sqlite3.connect(db_file)
+    raw_conn.execute("PRAGMA journal_mode=DELETE;")
+    raw_conn.close()
+
+    with db.get_connection(db_file) as conn:
+        mode_after = conn.execute("PRAGMA journal_mode;").fetchone()[0]
+        assert mode_after.lower() == "delete"
