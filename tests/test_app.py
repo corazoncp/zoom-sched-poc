@@ -334,3 +334,82 @@ def test_create_meeting_missing_required_keys_returns_502(client, monkeypatch):
         json={"credentials": SAMPLE_CREDS},
     )
     assert p_resp.status_code == 502
+
+
+@pytest.mark.parametrize(
+    ("meeting", "expected_status"),
+    [
+        # req is 20:00Z..21:00Z; req_end == m_start (21:00Z) -> available
+        ({"topic": "After", "start_time": "2026-11-25T21:00:00Z", "duration": 60}, 201),
+        # req_start == m_end (19:00Z + 60m = 20:00Z) -> available
+        ({"topic": "Before", "start_time": "2026-11-25T19:00:00Z", "duration": 60}, 201),
+        # 1-minute overlap at end (20:59Z < 21:00Z) -> conflict
+        ({"topic": "Overlap End", "start_time": "2026-11-25T20:59:00Z", "duration": 60}, 409),
+        # 1-minute overlap at start (19:01Z + 60m = 20:01Z > 20:00Z) -> conflict
+        ({"topic": "Overlap Start", "start_time": "2026-11-25T19:01:00Z", "duration": 60}, 409),
+        # Missing start_time is ignored -> available
+        ({"topic": "No Start Time", "duration": 60}, 201),
+    ],
+)
+def test_check_slot_availability_boundaries(client, monkeypatch, meeting, expected_status):
+    test_client, _ = client
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(200, {"access_token": "mock_token"}),
+    )
+    monkeypatch.setattr(
+        zoom.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(200, {"meetings": [meeting]}),
+    )
+
+    resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+            "timezone": "America/Bogota",
+            "duration_minutes": 60,
+        },
+    )
+    assert resp.status_code == expected_status
+
+
+def test_check_slot_availability_invalid_timezone_returns_400(client, monkeypatch):
+    test_client, _ = client
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(200, {"access_token": "mock_token"}),
+    )
+    resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+            "timezone": "Invalid/Timezone",
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_check_slot_availability_invalid_datetime_returns_400(client, monkeypatch):
+    test_client, _ = client
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(200, {"access_token": "mock_token"}),
+    )
+    resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "not-a-valid-datetime",
+            "timezone": "America/Bogota",
+        },
+    )
+    assert resp.status_code == 400
