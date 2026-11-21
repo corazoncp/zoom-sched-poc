@@ -246,13 +246,17 @@
       resultEl.className = "session-result";
       resultEl.innerHTML = "";
 
-      const resp = await fetch(`/api/appointments/${encodeURIComponent(lookupId)}`);
-      const data = await resp.json();
-      if (!resp.ok) {
-        showFeedback(fb, "error", escapeHtml(data.error || "No encontrado."));
-        return;
+      try {
+        const resp = await fetch(`/api/appointments/${encodeURIComponent(lookupId)}`);
+        const data = await resp.json();
+        if (!resp.ok) {
+          showFeedback(fb, "error", escapeHtml(data.error || "No encontrado."));
+          return;
+        }
+        renderAppointment(data);
+      } catch (err) {
+        showFeedback(fb, "error", `Error de red: ${escapeHtml(err.message)}`);
       }
-      renderAppointment(data);
     }
 
     function renderAppointment(appt) {
@@ -327,6 +331,7 @@
         return;
       }
 
+      const originalLabel = btn.textContent;
       btn.disabled = true;
       btn.textContent = "Procesando...";
 
@@ -340,7 +345,7 @@
         if (!resp.ok) {
           showFeedback(fb, "error", escapeHtml(data.error || "Error al confirmar el pago."));
           btn.disabled = false;
-          btn.textContent = "Proceder al pago";
+          btn.textContent = originalLabel;
           return;
         }
         renderAppointment(data);
@@ -348,7 +353,7 @@
       } catch (err) {
         showFeedback(fb, "error", `Error de red: ${escapeHtml(err.message)}`);
         btn.disabled = false;
-        btn.textContent = "Proceder al pago";
+        btn.textContent = originalLabel;
       }
     }
 
