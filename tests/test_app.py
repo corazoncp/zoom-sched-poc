@@ -1,3 +1,4 @@
+from contextlib import closing
 import sqlite3
 import threading
 from pathlib import Path
@@ -177,7 +178,8 @@ def test_booking_flow_never_persists_zoom_credentials(client, monkeypatch):
         json={"credentials": SAMPLE_CREDS},
     )
 
-    raw_db_text = sqlite3.connect(db_file).execute("SELECT * FROM appointments").fetchall()
+    with closing(sqlite3.connect(db_file)) as conn:
+        raw_db_text = conn.execute("SELECT * FROM appointments").fetchall()
     serialized = str(raw_db_text)
     assert "super_secret_value" not in serialized
     assert "cli_test_1234" not in serialized
@@ -488,9 +490,8 @@ def test_db_init_sets_wal_once_not_on_every_connection(tmp_path: Path):
         mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
         assert mode.lower() == "wal"
 
-    raw_conn = sqlite3.connect(db_file)
-    raw_conn.execute("PRAGMA journal_mode=DELETE;")
-    raw_conn.close()
+    with closing(sqlite3.connect(db_file)) as raw_conn:
+        raw_conn.execute("PRAGMA journal_mode=DELETE;")
 
     with db.get_connection(db_file) as conn:
         mode_after = conn.execute("PRAGMA journal_mode;").fetchone()[0]
