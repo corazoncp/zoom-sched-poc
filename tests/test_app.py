@@ -699,3 +699,86 @@ def test_delete_confirmed_calls_zoom_delete(client, monkeypatch):
     d_resp = test_client.delete(f"/api/appointments/{sid}", json={"credentials": SAMPLE_CREDS})
     assert d_resp.status_code == 200
     assert delete_calls == ["https://api.zoom.us/v2/meetings/44556677"]
+
+
+@pytest.mark.parametrize(
+    ("field", "length", "expected_status"),
+    [
+        ("account_id", 3, 422),
+        ("account_id", 4, 200),
+        ("account_id", 128, 200),
+        ("account_id", 129, 422),
+        ("client_id", 3, 422),
+        ("client_id", 4, 200),
+        ("client_id", 128, 200),
+        ("client_id", 129, 422),
+        ("client_secret", 3, 422),
+        ("client_secret", 4, 200),
+        ("client_secret", 256, 200),
+        ("client_secret", 257, 422),
+    ],
+)
+def test_zoom_credentials_length_boundaries(client, monkeypatch, field, length, expected_status):
+    test_client, _ = client
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(200, {"access_token": "mock_token"}),
+    )
+    payload = dict(SAMPLE_CREDS)
+    payload[field] = "x" * length
+    resp = test_client.post("/api/zoom/verify-credentials", json=payload)
+    assert resp.status_code == expected_status
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_status"),
+    [
+        ({"client_name": "A"}, 422),
+        ({"client_name": "AB"}, 201),
+        ({"client_name": "A" * 120}, 201),
+        ({"client_name": "A" * 121}, 422),
+        ({"duration_minutes": 14}, 422),
+        ({"duration_minutes": 15}, 201),
+        ({"duration_minutes": 240}, 201),
+        ({"duration_minutes": 241}, 422),
+        ({"amount_usd": 0}, 422),
+        ({"amount_usd": 0.01}, 201),
+        ({"amount_usd": 10000}, 201),
+        ({"amount_usd": 10000.01}, 422),
+    ],
+)
+def test_appointment_create_request_boundaries(client, monkeypatch, overrides, expected_status):
+    test_client, _ = client
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(200, {"access_token": "mock_token"}),
+    )
+    monkeypatch.setattr(
+        zoom.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(200, {"meetings": []}),
+    )
+    payload = {
+        "credentials": SAMPLE_CREDS,
+        "client_name": "María Perez",
+        "start_time_local": "2026-11-25T15:00",
+        **overrides,
+    }
+    resp = test_client.post("/api/appointments", json=payload)
+    assert resp.status_code == expected_status
+
+
+@pytest.mark.parametrize(
+    ("lookup_id", "expected_status"),
+    [
+        ("   ", 400),
+        ("a" * 64, 404),
+        ("a" * 65, 400),
+    ],
+)
+def test_get_appointment_lookup_id_length_boundaries(client, lookup_id, expected_status):
+    test_client, _ = client
+    resp = test_client.get(f"/api/appointments/{lookup_id}")
+    assert resp.status_code == expected_status
