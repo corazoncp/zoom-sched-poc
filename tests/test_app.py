@@ -35,9 +35,15 @@ def client(tmp_path: Path):
         yield test_client, db_file
 
 
-def test_health_and_index(client):
+def test_health_returns_ok(client):
     test_client, _ = client
-    assert test_client.get("/health").status_code == 200
+    resp = test_client.get("/health")
+    assert resp.status_code == 200
+    assert resp.get_json() == {"status": "ok"}
+
+
+def test_index_renders_configuration_heading(client):
+    test_client, _ = client
     resp = test_client.get("/")
     assert resp.status_code == 200
     assert b"CONFIGURACI" in resp.data
@@ -52,15 +58,13 @@ def test_validation_rejects_blank_credentials(client):
     assert resp.status_code == 422
 
 
-def test_full_booking_flow_idempotent_and_no_secret_persistence(client, monkeypatch):
-    test_client, db_file = client
-    create_calls = []
-
+def _mock_zoom_happy_path(monkeypatch, create_calls: list | None = None):
     def fake_post(url, **kwargs):
         if url == "https://zoom.us/oauth/token":
             return FakeResponse(200, {"access_token": "mock_token"})
         if url == "https://api.zoom.us/v2/users/me/meetings":
-            create_calls.append(kwargs.get("json"))
+            if create_calls is not None:
+                create_calls.append(kwargs.get("json"))
             return FakeResponse(
                 201,
                 {
@@ -71,26 +75,27 @@ def test_full_booking_flow_idempotent_and_no_secret_persistence(client, monkeypa
             )
         raise AssertionError(f"Unexpected POST URL: {url}")
 
-    def fake_get(url, **kwargs):
-        if url == "https://api.zoom.us/v2/users/me/meetings":
-            return FakeResponse(200, {"meetings": []})
-        raise AssertionError(f"Unexpected GET URL: {url}")
-
-    def fake_delete(url, **kwargs):
-        if url == "https://api.zoom.us/v2/meetings/987654321":
-            return FakeResponse(204, {})
-        raise AssertionError(f"Unexpected DELETE URL: {url}")
-
     monkeypatch.setattr(zoom.requests, "post", fake_post)
-    monkeypatch.setattr(zoom.requests, "get", fake_get)
-    monkeypatch.setattr(zoom.requests, "delete", fake_delete)
+    monkeypatch.setattr(
+        zoom.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(200, {"meetings": []}),
+    )
+    monkeypatch.setattr(
+        zoom.requests,
+        "delete",
+        lambda url, **kwargs: FakeResponse(204, {}),
+    )
 
-    # 1. Verify credentials
+
+def test_booking_flow_completes_lifecycle(client, monkeypatch):
+    test_client, _ = client
+    _mock_zoom_happy_path(monkeypatch)
+
     v_resp = test_client.post("/api/zoom/verify-credentials", json=SAMPLE_CREDS)
     assert v_resp.status_code == 200
     assert v_resp.get_json()["valid"] is True
 
-    # 2. Request appointment -> payment_pending
     c_resp = test_client.post(
         "/api/appointments",
         json={
@@ -106,11 +111,9 @@ def test_full_booking_flow_idempotent_and_no_secret_persistence(client, monkeypa
     assert appt["payment_id"].startswith("pay_")
     assert appt["zoom_meeting_id"] is None
 
-    # 3. Lookup by both session_id and payment_id
     assert test_client.get(f"/api/appointments/{appt['session_id']}").status_code == 200
     assert test_client.get(f"/api/appointments/{appt['payment_id']}").status_code == 200
 
-    # 4. Pay -> creates Zoom meeting and transitions to confirmed
     p_resp = test_client.post(
         f"/api/appointments/{appt['session_id']}/pay",
         json={"credentials": SAMPLE_CREDS},
@@ -119,30 +122,66 @@ def test_full_booking_flow_idempotent_and_no_secret_persistence(client, monkeypa
     confirmed = p_resp.get_json()
     assert confirmed["status"] == "confirmed"
     assert confirmed["zoom_meeting_id"] == "987654321"
-    assert len(create_calls) == 1
 
-    # 5. Re-running pay is idempotent (no duplicate Zoom meeting)
-    p_resp_2 = test_client.post(
-        f"/api/appointments/{appt['payment_id']}/pay",
-        json={"credentials": SAMPLE_CREDS},
-    )
-    assert p_resp_2.status_code == 200
-    assert len(create_calls) == 1
-
-    # 6. Verify Zoom credentials are never written to SQLite
-    raw_db_text = sqlite3.connect(db_file).execute("SELECT * FROM appointments").fetchall()
-    serialized = str(raw_db_text)
-    assert "super_secret_value" not in serialized
-    assert "cli_test_1234" not in serialized
-    assert "acc_test_1234" not in serialized
-
-    # 7. Cleanup deletes record
     d_resp = test_client.delete(
         f"/api/appointments/{appt['session_id']}",
         json={"credentials": SAMPLE_CREDS},
     )
     assert d_resp.status_code == 200
     assert test_client.get(f"/api/appointments/{appt['session_id']}").status_code == 404
+
+
+def test_pay_appointment_is_idempotent(client, monkeypatch):
+    test_client, _ = client
+    create_calls = []
+    _mock_zoom_happy_path(monkeypatch, create_calls=create_calls)
+
+    c_resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+        },
+    )
+    appt = c_resp.get_json()
+
+    first = test_client.post(
+        f"/api/appointments/{appt['session_id']}/pay",
+        json={"credentials": SAMPLE_CREDS},
+    )
+    second = test_client.post(
+        f"/api/appointments/{appt['payment_id']}/pay",
+        json={"credentials": SAMPLE_CREDS},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert len(create_calls) == 1
+
+
+def test_booking_flow_never_persists_zoom_credentials(client, monkeypatch):
+    test_client, db_file = client
+    _mock_zoom_happy_path(monkeypatch)
+
+    c_resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+        },
+    )
+    appt = c_resp.get_json()
+    test_client.post(
+        f"/api/appointments/{appt['session_id']}/pay",
+        json={"credentials": SAMPLE_CREDS},
+    )
+
+    raw_db_text = sqlite3.connect(db_file).execute("SELECT * FROM appointments").fetchall()
+    serialized = str(raw_db_text)
+    assert "super_secret_value" not in serialized
+    assert "cli_test_1234" not in serialized
+    assert "acc_test_1234" not in serialized
 
 
 def test_slot_conflict_returns_409(client, monkeypatch):
@@ -458,31 +497,9 @@ def test_db_init_sets_wal_once_not_on_every_connection(tmp_path: Path):
         assert mode_after.lower() == "delete"
 
 
-def test_duration_minutes_persisted_and_forwarded_to_zoom(client, monkeypatch):
+def test_create_appointment_persists_duration_minutes(client, monkeypatch):
     test_client, _ = client
-    captured_payloads = []
-
-    def fake_post(url, **kwargs):
-        if url == "https://zoom.us/oauth/token":
-            return FakeResponse(200, {"access_token": "mock_token"})
-        if url == "https://api.zoom.us/v2/users/me/meetings":
-            captured_payloads.append(kwargs.get("json"))
-            return FakeResponse(
-                201,
-                {
-                    "id": 11223344,
-                    "join_url": "https://zoom.us/j/11223344",
-                    "start_url": "https://zoom.us/s/11223344?zak=xyz",
-                },
-            )
-        raise AssertionError(f"Unexpected POST URL: {url}")
-
-    monkeypatch.setattr(zoom.requests, "post", fake_post)
-    monkeypatch.setattr(
-        zoom.requests,
-        "get",
-        lambda url, **kwargs: FakeResponse(200, {"meetings": []}),
-    )
+    _mock_zoom_happy_path(monkeypatch)
 
     c_resp = test_client.post(
         "/api/appointments",
@@ -501,8 +518,25 @@ def test_duration_minutes_persisted_and_forwarded_to_zoom(client, monkeypatch):
     assert g_resp.status_code == 200
     assert g_resp.get_json()["duration_minutes"] == 45
 
+
+def test_pay_appointment_forwards_duration_to_zoom(client, monkeypatch):
+    test_client, _ = client
+    captured_payloads = []
+    _mock_zoom_happy_path(monkeypatch, create_calls=captured_payloads)
+
+    c_resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "Ana López",
+            "start_time_local": "2026-11-25T15:00",
+            "duration_minutes": 45,
+        },
+    )
+    sid = c_resp.get_json()["session_id"]
+
     p_resp = test_client.post(
-        f"/api/appointments/{appt['session_id']}/pay",
+        f"/api/appointments/{sid}/pay",
         json={"credentials": SAMPLE_CREDS},
     )
     assert p_resp.status_code == 200
@@ -593,16 +627,19 @@ def test_index_validates_http_urls_before_rendering_links(client):
     assert 'href="${escapeHtml(appt.zoom_start_url)}"' not in html
 
 
-@pytest.mark.parametrize(
-    ("kwargs",),
-    [
-        ({"data": "{bad json", "content_type": "application/json"},),
-        ({"json": ["not", "a", "dict"]},),
-    ],
-)
-def test_parse_body_rejects_malformed_and_non_dict_json(client, kwargs):
+def test_parse_body_rejects_malformed_json(client):
     test_client, _ = client
-    resp = test_client.post("/api/zoom/verify-credentials", **kwargs)
+    resp = test_client.post(
+        "/api/zoom/verify-credentials",
+        data="{bad json",
+        content_type="application/json",
+    )
+    assert resp.status_code == 400
+
+
+def test_parse_body_rejects_non_dict_json(client):
+    test_client, _ = client
+    resp = test_client.post("/api/zoom/verify-credentials", json=["not", "a", "dict"])
     assert resp.status_code == 400
 
 
