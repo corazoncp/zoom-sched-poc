@@ -40,6 +40,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="../static")
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
+    app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
     if test_config:
         app.config.update(test_config)
 
@@ -55,6 +56,10 @@ def create_app(test_config: dict | None = None) -> Flask:
         enabled=app.config.get("RATELIMIT_ENABLED", True),
     )
     app.limiter = limiter
+
+    @app.errorhandler(413)
+    def handle_payload_too_large(_exc):
+        return jsonify({"error": "El cuerpo de la solicitud excede el límite permitido."}), 413
 
     @app.errorhandler(429)
     def handle_rate_limit(_exc):

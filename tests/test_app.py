@@ -703,6 +703,18 @@ def test_parse_body_rejects_non_dict_json(client):
     assert resp.status_code == 400
 
 
+def test_request_body_exceeding_max_content_length_returns_413(client):
+    test_client, _ = client
+    oversized = '{"padding": "' + ("a" * (65 * 1024)) + '"}'
+    resp = test_client.post(
+        "/api/appointments",
+        data=oversized,
+        content_type="application/json",
+    )
+    assert resp.status_code == 413
+    assert "error" in resp.get_json()
+
+
 def test_zoom_api_error_status_passthrough_returns_401(client, monkeypatch):
     test_client, _ = client
     monkeypatch.setattr(
