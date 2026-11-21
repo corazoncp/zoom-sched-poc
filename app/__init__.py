@@ -195,7 +195,8 @@ def create_app(test_config: dict | None = None) -> Flask:
             token = zoom.get_access_token(body.credentials)
             zoom.delete_meeting(token, row["zoom_meeting_id"])
 
-        db.delete_appointment(row["session_id"], db_path=db_path)
+        if not db.delete_appointment(row["session_id"], db_path=db_path):
+            return jsonify({"error": "No se puede eliminar la sesión mientras el pago está siendo procesado."}), 409
         return jsonify({"deleted": True, "session_id": row["session_id"]}), 200
 
     return app

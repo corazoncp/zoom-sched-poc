@@ -1125,3 +1125,42 @@ def test_get_appointment_omits_zoom_start_url_while_pay_returns_it(client, monke
     fetched = g_resp.get_json()
     assert fetched["zoom_start_url"] is None
     assert fetched["zoom_join_url"] == "https://zoom.us/j/987654321"
+
+
+def test_delete_rejects_with_409_when_row_claimed_after_lookup_snapshot(client, monkeypatch):
+    from app import db
+
+    test_client, db_file = client
+    _mock_zoom_happy_path(monkeypatch)
+
+    c_resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+        },
+    )
+    assert c_resp.status_code == 201
+    sid = c_resp.get_json()["session_id"]
+
+    real_lookup = db.get_appointment_by_lookup
+    race_triggered = False
+
+    def racing_lookup(lookup_id, db_path=None):
+        nonlocal race_triggered
+        row = real_lookup(lookup_id, db_path=db_path)
+        if row and not race_triggered and row["status"] == "payment_pending":
+            race_triggered = True
+            assert db.claim_appointment_for_payment(row["session_id"], db_path=db_path) is True
+        return row
+
+    monkeypatch.setattr(db, "get_appointment_by_lookup", racing_lookup)
+
+    d_resp = test_client.delete(f"/api/appointments/{sid}", json={"credentials": SAMPLE_CREDS})
+    assert d_resp.status_code == 409
+
+    monkeypatch.undo()
+    persisted = real_lookup(sid, db_path=db_file)
+    assert persisted is not None
+    assert persisted["status"] == "payment_processing"

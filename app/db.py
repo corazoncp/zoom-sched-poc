@@ -166,9 +166,10 @@ def mark_appointment_confirmed(
 
 
 def delete_appointment(session_id: str, db_path: Path | None = None) -> bool:
-    """Remove an appointment record from SQLite."""
+    """Remove an appointment record from SQLite unless payment is in flight."""
     with get_connection(db_path) as conn:
         cursor = conn.execute(
-            "DELETE FROM appointments WHERE session_id = ?", (session_id,)
+            "DELETE FROM appointments WHERE session_id = ? AND status != 'payment_processing'",
+            (session_id,),
         )
     return cursor.rowcount > 0
