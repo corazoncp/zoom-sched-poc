@@ -283,9 +283,11 @@
         const joinLinkHtml = safeJoinUrl
           ? `<a href="${escapeHtml(safeJoinUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(safeJoinUrl)}</a>`
           : `<span>${escapeHtml(appt.zoom_join_url || "No disponible")}</span>`;
-        const startLinkHtml = safeStartUrl
-          ? `<a href="${escapeHtml(safeStartUrl)}" target="_blank" rel="noopener noreferrer">Abrir como anfitriona (privado)</a>`
-          : `<span>Enlace no válido</span>`;
+        const startLinkHtml = !appt.zoom_start_url
+          ? `<span>Disponible solo al confirmar el pago (requiere credenciales de anfitriona)</span>`
+          : safeStartUrl
+            ? `<a href="${escapeHtml(safeStartUrl)}" target="_blank" rel="noopener noreferrer">Abrir como anfitriona (privado)</a>`
+            : `<span>Enlace no válido</span>`;
         extraHtml = `
           <ul class="meta-list">
             <li><strong>Zoom Meeting ID:</strong> <code>${escapeHtml(appt.zoom_meeting_id)}</code></li>

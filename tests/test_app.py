@@ -843,3 +843,32 @@ def test_get_appointment_lookup_id_length_boundaries(client, lookup_id, expected
     test_client, _ = client
     resp = test_client.get(f"/api/appointments/{lookup_id}")
     assert resp.status_code == expected_status
+
+
+def test_get_appointment_omits_zoom_start_url_while_pay_returns_it(client, monkeypatch):
+    test_client, _ = client
+    _mock_zoom_happy_path(monkeypatch)
+
+    c_resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+        },
+    )
+    assert c_resp.status_code == 201
+    sid = c_resp.get_json()["session_id"]
+
+    p_resp = test_client.post(
+        f"/api/appointments/{sid}/pay",
+        json={"credentials": SAMPLE_CREDS},
+    )
+    assert p_resp.status_code == 200
+    assert p_resp.get_json()["zoom_start_url"] == "https://zoom.us/s/987654321?zak=abc"
+
+    g_resp = test_client.get(f"/api/appointments/{sid}")
+    assert g_resp.status_code == 200
+    fetched = g_resp.get_json()
+    assert fetched["zoom_start_url"] is None
+    assert fetched["zoom_join_url"] == "https://zoom.us/j/987654321"

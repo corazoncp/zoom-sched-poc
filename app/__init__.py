@@ -122,7 +122,9 @@ def create_app(test_config: dict | None = None) -> Flask:
         row, err = _resolve_appointment(lookup_id, db_path)
         if err:
             return err
-        return jsonify(AppointmentResponse.model_validate(row).model_dump()), 200
+        payload = AppointmentResponse.model_validate(row).model_dump()
+        payload["zoom_start_url"] = None
+        return jsonify(payload), 200
 
     @app.post("/api/appointments/<lookup_id>/pay")
     @limiter.limit("10 per minute")
