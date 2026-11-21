@@ -1034,6 +1034,14 @@ def test_zoom_credentials_length_boundaries(client, monkeypatch, field, length, 
         ({"amount_usd": 0.01}, 201),
         ({"amount_usd": 10000}, 201),
         ({"amount_usd": 10000.01}, 422),
+        ({"start_time_local": "2026-11-25T15:0"}, 422),
+        ({"start_time_local": "2026-11-25T15:00"}, 201),
+        ({"start_time_local": "2026-11-25T15:00:00.000000+00:00"}, 201),
+        ({"start_time_local": "2026-11-25T15:00:00.0000000+00:00"}, 422),
+        ({"timezone": "UT"}, 422),
+        ({"timezone": "UTC"}, 201),
+        ({"timezone": "A" * 64}, 400),
+        ({"timezone": "A" * 65}, 422),
     ],
 )
 def test_appointment_create_request_boundaries(client, monkeypatch, overrides, expected_status):
@@ -1062,6 +1070,7 @@ def test_appointment_create_request_boundaries(client, monkeypatch, overrides, e
     ("lookup_id", "expected_status"),
     [
         ("   ", 400),
+        ("a", 404),
         ("a" * 64, 404),
         ("a" * 65, 400),
     ],
