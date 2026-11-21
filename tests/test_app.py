@@ -815,6 +815,19 @@ def test_zoom_api_error_status_passthrough_returns_401(client, monkeypatch):
     assert resp.get_json()["zoom_status"] == 401
 
 
+@pytest.mark.parametrize("raw_status", [302, 399, 600])
+def test_zoom_api_error_clamps_non_4xx_5xx_status_to_502(client, monkeypatch, raw_status):
+    test_client, _ = client
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(raw_status, {"reason": "Unexpected upstream status"}),
+    )
+    resp = test_client.post("/api/zoom/verify-credentials", json=SAMPLE_CREDS)
+    assert resp.status_code == 502
+    assert resp.get_json()["zoom_status"] == raw_status
+
+
 def test_zoom_request_exception_returns_502(client, monkeypatch):
     test_client, _ = client
 
