@@ -26,6 +26,16 @@ def _parse_body(model_cls: type[BaseModel]):
         return None, (jsonify({"error": "Validation failed", "details": exc.errors()}), 422)
 
 
+def _resolve_appointment(lookup_id: str, db_path: Path | None):
+    cleaned = lookup_id.strip()
+    if not cleaned or len(cleaned) > 64:
+        return None, (jsonify({"error": "ID inválido"}), 400)
+    row = db.get_appointment_by_lookup(cleaned, db_path=db_path)
+    if not row:
+        return None, (jsonify({"error": f"No se encontró ninguna sesión para '{cleaned}'."}), 404)
+    return row, None
+
+
 def create_app(test_config: dict | None = None) -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="../static")
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
@@ -109,22 +119,17 @@ def create_app(test_config: dict | None = None) -> Flask:
     @app.get("/api/appointments/<lookup_id>")
     @limiter.limit("20 per minute")
     def get_appointment(lookup_id: str):
-        cleaned = lookup_id.strip()
-        if not cleaned or len(cleaned) > 64:
-            return jsonify({"error": "ID inválido"}), 400
-
-        row = db.get_appointment_by_lookup(cleaned, db_path=db_path)
-        if not row:
-            return jsonify({"error": f"No se encontró ninguna sesión para '{cleaned}'."}), 404
+        row, err = _resolve_appointment(lookup_id, db_path)
+        if err:
+            return err
         return jsonify(AppointmentResponse.model_validate(row).model_dump()), 200
 
     @app.post("/api/appointments/<lookup_id>/pay")
     @limiter.limit("10 per minute")
     def pay_appointment(lookup_id: str):
-        cleaned = lookup_id.strip()
-        row = db.get_appointment_by_lookup(cleaned, db_path=db_path)
-        if not row:
-            return jsonify({"error": f"No se encontró ninguna sesión para '{cleaned}'."}), 404
+        row, err = _resolve_appointment(lookup_id, db_path)
+        if err:
+            return err
 
         body, err = _parse_body(PayAppointmentRequest)
         if err:
@@ -166,10 +171,9 @@ def create_app(test_config: dict | None = None) -> Flask:
     @app.delete("/api/appointments/<lookup_id>")
     @limiter.limit("10 per minute")
     def delete_appointment(lookup_id: str):
-        cleaned = lookup_id.strip()
-        row = db.get_appointment_by_lookup(cleaned, db_path=db_path)
-        if not row:
-            return jsonify({"error": f"No se encontró ninguna sesión para '{cleaned}'."}), 404
+        row, err = _resolve_appointment(lookup_id, db_path)
+        if err:
+            return err
 
         body, err = _parse_body(DeleteAppointmentRequest)
         if err:
