@@ -2,6 +2,7 @@ import sqlite3
 import threading
 from pathlib import Path
 import pytest
+import requests
 
 from app import create_app, zoom
 
@@ -567,3 +568,134 @@ def test_index_validates_http_urls_before_rendering_links(client):
     assert "safeHttpUrl(appt.zoom_start_url)" in html
     assert 'href="${escapeHtml(appt.zoom_join_url)}"' not in html
     assert 'href="${escapeHtml(appt.zoom_start_url)}"' not in html
+
+
+@pytest.mark.parametrize(
+    ("kwargs",),
+    [
+        ({"data": "{bad json", "content_type": "application/json"},),
+        ({"json": ["not", "a", "dict"]},),
+    ],
+)
+def test_parse_body_rejects_malformed_and_non_dict_json(client, kwargs):
+    test_client, _ = client
+    resp = test_client.post("/api/zoom/verify-credentials", **kwargs)
+    assert resp.status_code == 400
+
+
+def test_zoom_api_error_status_passthrough_returns_401(client, monkeypatch):
+    test_client, _ = client
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(401, {"reason": "Invalid client"}),
+    )
+    resp = test_client.post("/api/zoom/verify-credentials", json=SAMPLE_CREDS)
+    assert resp.status_code == 401
+    assert resp.get_json()["zoom_status"] == 401
+
+
+def test_zoom_request_exception_returns_502(client, monkeypatch):
+    test_client, _ = client
+
+    def raise_network_error(url, **kwargs):
+        raise requests.RequestException("Connection timed out")
+
+    monkeypatch.setattr(zoom.requests, "post", raise_network_error)
+    resp = test_client.post("/api/zoom/verify-credentials", json=SAMPLE_CREDS)
+    assert resp.status_code == 502
+
+
+def test_pay_missing_appointment_returns_404(client):
+    test_client, _ = client
+    resp = test_client.post("/api/appointments/ses_missing123/pay", json={"credentials": SAMPLE_CREDS})
+    assert resp.status_code == 404
+
+
+def test_delete_missing_appointment_returns_404(client):
+    test_client, _ = client
+    resp = test_client.delete("/api/appointments/ses_missing123", json={"credentials": SAMPLE_CREDS})
+    assert resp.status_code == 404
+
+
+def test_delete_payment_pending_does_not_call_zoom_delete(client, monkeypatch):
+    test_client, _ = client
+    delete_calls = []
+
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(200, {"access_token": "mock_token"}),
+    )
+    monkeypatch.setattr(
+        zoom.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(200, {"meetings": []}),
+    )
+    monkeypatch.setattr(
+        zoom.requests,
+        "delete",
+        lambda url, **kwargs: delete_calls.append(url) or FakeResponse(204, {}),
+    )
+
+    c_resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+        },
+    )
+    assert c_resp.status_code == 201
+    sid = c_resp.get_json()["session_id"]
+
+    d_resp = test_client.delete(f"/api/appointments/{sid}", json={"credentials": SAMPLE_CREDS})
+    assert d_resp.status_code == 200
+    assert delete_calls == []
+
+
+def test_delete_confirmed_calls_zoom_delete(client, monkeypatch):
+    test_client, _ = client
+    delete_calls = []
+
+    def fake_post(url, **kwargs):
+        if url == "https://zoom.us/oauth/token":
+            return FakeResponse(200, {"access_token": "mock_token"})
+        if url == "https://api.zoom.us/v2/users/me/meetings":
+            return FakeResponse(
+                201,
+                {
+                    "id": 44556677,
+                    "join_url": "https://zoom.us/j/44556677",
+                    "start_url": "https://zoom.us/s/44556677?zak=abc",
+                },
+            )
+        raise AssertionError(f"Unexpected POST URL: {url}")
+
+    monkeypatch.setattr(zoom.requests, "post", fake_post)
+    monkeypatch.setattr(
+        zoom.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(200, {"meetings": []}),
+    )
+    monkeypatch.setattr(
+        zoom.requests,
+        "delete",
+        lambda url, **kwargs: delete_calls.append(url) or FakeResponse(204, {}),
+    )
+
+    c_resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+        },
+    )
+    sid = c_resp.get_json()["session_id"]
+    p_resp = test_client.post(f"/api/appointments/{sid}/pay", json={"credentials": SAMPLE_CREDS})
+    assert p_resp.status_code == 200
+
+    d_resp = test_client.delete(f"/api/appointments/{sid}", json={"credentials": SAMPLE_CREDS})
+    assert d_resp.status_code == 200
+    assert delete_calls == ["https://api.zoom.us/v2/meetings/44556677"]
