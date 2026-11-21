@@ -544,6 +544,10 @@ def test_create_meeting_missing_required_keys_returns_502(client, monkeypatch):
     )
     assert p_resp.status_code == 502
 
+    g_resp = test_client.get(f"/api/appointments/{sid}")
+    assert g_resp.status_code == 200
+    assert g_resp.get_json()["status"] == "payment_pending"
+
 
 @pytest.mark.parametrize(
     ("meeting", "expected_status"),
