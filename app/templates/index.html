@@ -119,6 +119,15 @@
         .replace(/"/g, "&quot;");
     }
 
+    function safeHttpUrl(url) {
+      try {
+        const parsed = new URL(String(url ?? ""));
+        return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+      } catch {
+        return null;
+      }
+    }
+
     function readCredentialsFromInputs() {
       return {
         account_id: document.getElementById("zoom-account-id").value.trim(),
@@ -265,11 +274,19 @@
           </div>
         `;
       } else {
+        const safeJoinUrl = safeHttpUrl(appt.zoom_join_url);
+        const safeStartUrl = safeHttpUrl(appt.zoom_start_url);
+        const joinLinkHtml = safeJoinUrl
+          ? `<a href="${escapeHtml(safeJoinUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(safeJoinUrl)}</a>`
+          : `<span>${escapeHtml(appt.zoom_join_url || "No disponible")}</span>`;
+        const startLinkHtml = safeStartUrl
+          ? `<a href="${escapeHtml(safeStartUrl)}" target="_blank" rel="noopener noreferrer">Abrir como anfitriona (privado)</a>`
+          : `<span>Enlace no válido</span>`;
         extraHtml = `
           <ul class="meta-list">
             <li><strong>Zoom Meeting ID:</strong> <code>${escapeHtml(appt.zoom_meeting_id)}</code></li>
-            <li><strong>Link cliente:</strong> <a href="${escapeHtml(appt.zoom_join_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(appt.zoom_join_url)}</a></li>
-            <li><strong>Link anfitriona:</strong> <a href="${escapeHtml(appt.zoom_start_url)}" target="_blank" rel="noopener noreferrer">Abrir como anfitriona (privado)</a></li>
+            <li><strong>Link cliente:</strong> ${joinLinkHtml}</li>
+            <li><strong>Link anfitriona:</strong> ${startLinkHtml}</li>
           </ul>
           <div class="actions-center">
             <button id="delete-btn" class="btn btn-danger" type="button">Eliminar reunión de prueba</button>

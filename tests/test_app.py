@@ -554,3 +554,16 @@ def test_concurrent_pay_creates_only_one_zoom_meeting(tmp_path: Path, monkeypatc
 
     assert len(create_calls) == 1
     assert sorted(statuses) == [200, 409]
+
+
+def test_index_validates_http_urls_before_rendering_links(client):
+    test_client, _ = client
+    resp = test_client.get("/")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert "function safeHttpUrl(" in html
+    assert 'parsed.protocol === "http:" || parsed.protocol === "https:"' in html
+    assert "safeHttpUrl(appt.zoom_join_url)" in html
+    assert "safeHttpUrl(appt.zoom_start_url)" in html
+    assert 'href="${escapeHtml(appt.zoom_join_url)}"' not in html
+    assert 'href="${escapeHtml(appt.zoom_start_url)}"' not in html
