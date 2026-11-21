@@ -160,6 +160,65 @@ def test_pay_appointment_is_idempotent(client, monkeypatch):
     assert len(create_calls) == 1
 
 
+def test_pay_confirmed_appointment_rejects_invalid_credentials(client, monkeypatch):
+    test_client, _ = client
+    create_calls = []
+    _mock_zoom_happy_path(monkeypatch, create_calls=create_calls)
+
+    c_resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+        },
+    )
+    assert c_resp.status_code == 201
+    sid = c_resp.get_json()["session_id"]
+
+    first = test_client.post(
+        f"/api/appointments/{sid}/pay",
+        json={"credentials": SAMPLE_CREDS},
+    )
+    assert first.status_code == 200
+    assert first.get_json()["zoom_start_url"] == "https://zoom.us/s/987654321?zak=abc"
+    assert len(create_calls) == 1
+
+    def fake_post_invalid_on_bad_creds(url, **kwargs):
+        if url == "https://zoom.us/oauth/token":
+            if kwargs.get("params", {}).get("account_id") != SAMPLE_CREDS["account_id"]:
+                return FakeResponse(401, {"reason": "Invalid client_id or client_secret"})
+            return FakeResponse(200, {"access_token": "mock_token"})
+        if url == "https://api.zoom.us/v2/users/me/meetings":
+            create_calls.append(kwargs.get("json"))
+            raise AssertionError("create_meeting must not be called for already-confirmed appointment")
+        raise AssertionError(f"Unexpected POST URL: {url}")
+
+    monkeypatch.setattr(zoom.requests, "post", fake_post_invalid_on_bad_creds)
+
+    bad_resp = test_client.post(
+        f"/api/appointments/{sid}/pay",
+        json={
+            "credentials": {
+                "account_id": "wrong_acc",
+                "client_id": "wrong_id",
+                "client_secret": "wrong_secret",
+            }
+        },
+    )
+    assert bad_resp.status_code == 401
+    assert "zoom_start_url" not in bad_resp.get_json()
+    assert len(create_calls) == 1
+
+    good_resp = test_client.post(
+        f"/api/appointments/{sid}/pay",
+        json={"credentials": SAMPLE_CREDS},
+    )
+    assert good_resp.status_code == 200
+    assert good_resp.get_json()["zoom_start_url"] == "https://zoom.us/s/987654321?zak=abc"
+    assert len(create_calls) == 1
+
+
 def test_booking_flow_never_persists_zoom_credentials(client, monkeypatch):
     test_client, db_file = client
     _mock_zoom_happy_path(monkeypatch)

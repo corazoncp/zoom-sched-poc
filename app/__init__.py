@@ -139,6 +139,7 @@ def create_app(test_config: dict | None = None) -> Flask:
 
         # Idempotent: return existing confirmed session without creating a duplicate meeting
         if row["status"] == "confirmed":
+            zoom.get_access_token(body.credentials)
             return jsonify(AppointmentResponse.model_validate(row).model_dump()), 200
         if row["status"] == "payment_processing":
             return jsonify({"error": "El pago ya está siendo procesado."}), 409
@@ -146,6 +147,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         if not db.claim_appointment_for_payment(row["session_id"], db_path=db_path):
             latest = db.get_appointment_by_lookup(row["session_id"], db_path=db_path)
             if latest and latest["status"] == "confirmed":
+                zoom.get_access_token(body.credentials)
                 return jsonify(AppointmentResponse.model_validate(latest).model_dump()), 200
             return jsonify({"error": "El pago ya está siendo procesado."}), 409
 
