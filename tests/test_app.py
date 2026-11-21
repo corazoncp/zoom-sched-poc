@@ -197,3 +197,140 @@ def test_rate_limiting_blocks_brute_force(tmp_path: Path, monkeypatch):
             for _ in range(12)
         ]
     assert 429 in statuses
+
+
+def test_zoom_invalid_json_returns_502(client, monkeypatch):
+    test_client, _ = client
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(200, ValueError("Invalid JSON"), text="not json"),
+    )
+    resp = test_client.post("/api/zoom/verify-credentials", json=SAMPLE_CREDS)
+    assert resp.status_code == 502
+
+
+def test_check_slot_availability_handles_none_duration(client, monkeypatch):
+    test_client, _ = client
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(200, {"access_token": "mock_token"}),
+    )
+    monkeypatch.setattr(
+        zoom.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(
+            200,
+            {
+                "meetings": [
+                    {
+                        "topic": "Reunión sin duración",
+                        "start_time": "2026-11-25T20:00:00Z",
+                        "duration": None,
+                    }
+                ]
+            },
+        ),
+    )
+    resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+        },
+    )
+    assert resp.status_code == 409
+
+
+def test_check_slot_availability_paginates_via_next_page_token(client, monkeypatch):
+    test_client, _ = client
+    seen_params = []
+
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(200, {"access_token": "mock_token"}),
+    )
+
+    def fake_get(url, **kwargs):
+        params = kwargs.get("params", {})
+        seen_params.append(dict(params))
+        if not params.get("next_page_token"):
+            return FakeResponse(
+                200,
+                {
+                    "meetings": [
+                        {
+                            "topic": "Página 1",
+                            "start_time": "2026-11-24T10:00:00Z",
+                            "duration": 60,
+                        }
+                    ],
+                    "next_page_token": "tok_page_2",
+                },
+            )
+        return FakeResponse(
+            200,
+            {
+                "meetings": [
+                    {
+                        "topic": "Conflicto Página 2",
+                        "start_time": "2026-11-25T20:00:00Z",
+                        "duration": 60,
+                    }
+                ],
+                "next_page_token": "",
+            },
+        )
+
+    monkeypatch.setattr(zoom.requests, "get", fake_get)
+
+    resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+        },
+    )
+    assert resp.status_code == 409
+    assert "Conflicto Página 2" in resp.get_json()["error"]
+    assert len(seen_params) == 2
+    assert seen_params[1].get("next_page_token") == "tok_page_2"
+
+
+def test_create_meeting_missing_required_keys_returns_502(client, monkeypatch):
+    test_client, _ = client
+
+    def fake_post(url, **kwargs):
+        if url == "https://zoom.us/oauth/token":
+            return FakeResponse(200, {"access_token": "mock_token"})
+        if url == "https://api.zoom.us/v2/users/me/meetings":
+            return FakeResponse(201, {"id": 12345})  # missing join_url, start_url
+        raise AssertionError(f"Unexpected POST URL: {url}")
+
+    monkeypatch.setattr(zoom.requests, "post", fake_post)
+    monkeypatch.setattr(
+        zoom.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(200, {"meetings": []}),
+    )
+
+    c_resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+        },
+    )
+    assert c_resp.status_code == 201
+    sid = c_resp.get_json()["session_id"]
+
+    p_resp = test_client.post(
+        f"/api/appointments/{sid}/pay",
+        json={"credentials": SAMPLE_CREDS},
+    )
+    assert p_resp.status_code == 502

@@ -25,6 +25,16 @@ def _extract_zoom_error(resp: requests.Response) -> str:
     return resp.text or f"Zoom API HTTP {resp.status_code}"
 
 
+def _parse_json_dict(resp: requests.Response, context: str) -> dict:
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise ZoomAPIError(502, f"Invalid JSON response from Zoom {context}") from exc
+    if not isinstance(data, dict):
+        raise ZoomAPIError(502, f"Unexpected non-object JSON response from Zoom {context}")
+    return data
+
+
 def get_access_token(creds: ZoomCredentials) -> str:
     """Exchange Server-to-Server OAuth credentials for a short-lived Bearer token."""
     raw = f"{creds.client_id}:{creds.client_secret.get_secret_value()}".encode("utf-8")
@@ -43,7 +53,8 @@ def get_access_token(creds: ZoomCredentials) -> str:
     if not resp.ok:
         raise ZoomAPIError(resp.status_code, _extract_zoom_error(resp))
 
-    token = resp.json().get("access_token")
+    data = _parse_json_dict(resp, "OAuth")
+    token = data.get("access_token")
     if not token:
         raise ZoomAPIError(502, "Zoom OAuth response did not include an access_token")
     return token
@@ -69,28 +80,40 @@ def check_slot_availability(
     req_start = (parsed if parsed.tzinfo else parsed.replace(tzinfo=local_tz)).astimezone(timezone.utc)
     req_end = req_start + timedelta(minutes=duration_minutes)
 
-    try:
-        resp = requests.get(
-            "https://api.zoom.us/v2/users/me/meetings",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"type": "upcoming", "page_size": 100},
-            timeout=15,
-        )
-    except requests.RequestException as exc:
-        raise ZoomAPIError(502, f"Network error contacting Zoom Meetings API: {exc}") from exc
+    next_page_token = ""
+    while True:
+        params: dict[str, object] = {"type": "upcoming", "page_size": 100}
+        if next_page_token:
+            params["next_page_token"] = next_page_token
 
-    if not resp.ok:
-        raise ZoomAPIError(resp.status_code, _extract_zoom_error(resp))
+        try:
+            resp = requests.get(
+                "https://api.zoom.us/v2/users/me/meetings",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params=params,
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            raise ZoomAPIError(502, f"Network error contacting Zoom Meetings API: {exc}") from exc
 
-    for meeting in resp.json().get("meetings", []):
-        raw_start = meeting.get("start_time")
-        if not raw_start:
-            continue
-        m_start = datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
-        m_end = m_start + timedelta(minutes=meeting.get("duration", 60))
-        if req_start < m_end and req_end > m_start:
-            topic = meeting.get("topic", "Reunión existente")
-            return False, f"Conflicto con '{topic}' ({raw_start})"
+        if not resp.ok:
+            raise ZoomAPIError(resp.status_code, _extract_zoom_error(resp))
+
+        data = _parse_json_dict(resp, "Meetings API")
+        for meeting in data.get("meetings", []):
+            raw_start = meeting.get("start_time")
+            if not raw_start:
+                continue
+            m_start = datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
+            duration = meeting.get("duration") or 60
+            m_end = m_start + timedelta(minutes=duration)
+            if req_start < m_end and req_end > m_start:
+                topic = meeting.get("topic", "Reunión existente")
+                return False, f"Conflicto con '{topic}' ({raw_start})"
+
+        next_page_token = data.get("next_page_token") or ""
+        if not next_page_token:
+            break
 
     return True, None
 
@@ -132,7 +155,11 @@ def create_meeting(
     if not resp.ok:
         raise ZoomAPIError(resp.status_code, _extract_zoom_error(resp))
 
-    return resp.json()
+    data = _parse_json_dict(resp, "Create Meeting")
+    required = ("id", "join_url", "start_url")
+    if any(not data.get(key) for key in required):
+        raise ZoomAPIError(502, "Zoom Create Meeting response missing required meeting fields")
+    return data
 
 
 def delete_meeting(access_token: str, meeting_id: str) -> None:
