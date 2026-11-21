@@ -101,6 +101,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             start_time_local=body.start_time_local,
             timezone_name=body.timezone,
             amount_usd=body.amount_usd,
+            duration_minutes=body.duration_minutes,
             db_path=db_path,
         )
         return jsonify(AppointmentResponse.model_validate(row).model_dump()), 201
@@ -139,6 +140,7 @@ def create_app(test_config: dict | None = None) -> Flask:
             topic=f"Sesión con {row['client_name']}",
             start_time_local=row["start_time_local"],
             tz_name=row["timezone"],
+            duration_minutes=row["duration_minutes"],
         )
         updated = db.mark_appointment_confirmed(
             session_id=row["session_id"],

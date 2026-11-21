@@ -431,3 +431,56 @@ def test_db_init_sets_wal_once_not_on_every_connection(tmp_path: Path):
     with db.get_connection(db_file) as conn:
         mode_after = conn.execute("PRAGMA journal_mode;").fetchone()[0]
         assert mode_after.lower() == "delete"
+
+
+def test_duration_minutes_persisted_and_forwarded_to_zoom(client, monkeypatch):
+    test_client, _ = client
+    captured_payloads = []
+
+    def fake_post(url, **kwargs):
+        if url == "https://zoom.us/oauth/token":
+            return FakeResponse(200, {"access_token": "mock_token"})
+        if url == "https://api.zoom.us/v2/users/me/meetings":
+            captured_payloads.append(kwargs.get("json"))
+            return FakeResponse(
+                201,
+                {
+                    "id": 11223344,
+                    "join_url": "https://zoom.us/j/11223344",
+                    "start_url": "https://zoom.us/s/11223344?zak=xyz",
+                },
+            )
+        raise AssertionError(f"Unexpected POST URL: {url}")
+
+    monkeypatch.setattr(zoom.requests, "post", fake_post)
+    monkeypatch.setattr(
+        zoom.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(200, {"meetings": []}),
+    )
+
+    c_resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "Ana López",
+            "start_time_local": "2026-11-25T15:00",
+            "duration_minutes": 45,
+        },
+    )
+    assert c_resp.status_code == 201
+    appt = c_resp.get_json()
+    assert appt["duration_minutes"] == 45
+
+    g_resp = test_client.get(f"/api/appointments/{appt['session_id']}")
+    assert g_resp.status_code == 200
+    assert g_resp.get_json()["duration_minutes"] == 45
+
+    p_resp = test_client.post(
+        f"/api/appointments/{appt['session_id']}/pay",
+        json={"credentials": SAMPLE_CREDS},
+    )
+    assert p_resp.status_code == 200
+    assert p_resp.get_json()["duration_minutes"] == 45
+    assert len(captured_payloads) == 1
+    assert captured_payloads[0]["duration"] == 45

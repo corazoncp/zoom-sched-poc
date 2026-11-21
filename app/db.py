@@ -39,6 +39,7 @@ def init_db(db_path: Path | None = None) -> None:
                 client_name TEXT NOT NULL,
                 start_time_local TEXT NOT NULL,
                 timezone TEXT NOT NULL,
+                duration_minutes INTEGER NOT NULL DEFAULT 60,
                 amount_usd REAL NOT NULL,
                 status TEXT NOT NULL CHECK (status IN ('payment_pending', 'confirmed')),
                 zoom_meeting_id TEXT,
@@ -49,6 +50,11 @@ def init_db(db_path: Path | None = None) -> None:
             )
             """
         )
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(appointments)").fetchall()}
+        if "duration_minutes" not in cols:
+            conn.execute(
+                "ALTER TABLE appointments ADD COLUMN duration_minutes INTEGER NOT NULL DEFAULT 60"
+            )
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict | None:
@@ -60,6 +66,7 @@ def create_appointment(
     start_time_local: str,
     timezone_name: str,
     amount_usd: float,
+    duration_minutes: int = 60,
     db_path: Path | None = None,
 ) -> dict:
     """Insert a new appointment in payment_pending state."""
@@ -72,9 +79,9 @@ def create_appointment(
             """
             INSERT INTO appointments (
                 session_id, payment_id, client_name, start_time_local,
-                timezone, amount_usd, status, created_at
+                timezone, duration_minutes, amount_usd, status, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, 'payment_pending', ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'payment_pending', ?)
             """,
             (
                 session_id,
@@ -82,6 +89,7 @@ def create_appointment(
                 client_name,
                 start_time_local,
                 timezone_name,
+                duration_minutes,
                 amount_usd,
                 created_at,
             ),
