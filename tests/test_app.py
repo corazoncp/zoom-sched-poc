@@ -786,6 +786,78 @@ def test_delete_payment_pending_does_not_call_zoom_delete(client, monkeypatch):
     assert delete_calls == []
 
 
+def test_delete_during_payment_processing_returns_409_and_preserves_row(tmp_path: Path, monkeypatch):
+    db_file = tmp_path / "test_appointments.db"
+    app = create_app({"TESTING": True, "DB_PATH": str(db_file), "RATELIMIT_ENABLED": False})
+    entered = threading.Event()
+    proceed = threading.Event()
+
+    def fake_post(url, **kwargs):
+        if url == "https://zoom.us/oauth/token":
+            return FakeResponse(200, {"access_token": "mock_token"})
+        if url == "https://api.zoom.us/v2/users/me/meetings":
+            entered.set()
+            assert proceed.wait(timeout=5.0)
+            return FakeResponse(
+                201,
+                {
+                    "id": 44556677,
+                    "join_url": "https://zoom.us/j/44556677",
+                    "start_url": "https://zoom.us/s/44556677?zak=abc",
+                },
+            )
+        raise AssertionError(f"Unexpected POST URL: {url}")
+
+    monkeypatch.setattr(zoom.requests, "post", fake_post)
+    monkeypatch.setattr(
+        zoom.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(200, {"meetings": []}),
+    )
+
+    with app.test_client() as setup_client:
+        c_resp = setup_client.post(
+            "/api/appointments",
+            json={
+                "credentials": SAMPLE_CREDS,
+                "client_name": "María Perez",
+                "start_time_local": "2026-11-25T15:00",
+            },
+        )
+        assert c_resp.status_code == 201
+        sid = c_resp.get_json()["session_id"]
+
+    pay_result = {}
+
+    def pay_worker():
+        with app.test_client() as worker_client:
+            pay_result["resp"] = worker_client.post(
+                f"/api/appointments/{sid}/pay",
+                json={"credentials": SAMPLE_CREDS},
+            )
+
+    t = threading.Thread(target=pay_worker)
+    t.start()
+    try:
+        assert entered.wait(timeout=5.0)
+        with app.test_client() as delete_client:
+            d_resp = delete_client.delete(
+                f"/api/appointments/{sid}",
+                json={"credentials": SAMPLE_CREDS},
+            )
+            assert d_resp.status_code == 409
+            assert "error" in d_resp.get_json()
+    finally:
+        proceed.set()
+        t.join(timeout=5.0)
+
+    assert pay_result["resp"].status_code == 200
+    with app.test_client() as check_client:
+        g_resp = check_client.get(f"/api/appointments/{sid}")
+        assert g_resp.status_code == 200
+        assert g_resp.get_json()["status"] == "confirmed"
+
+
 def test_delete_confirmed_calls_zoom_delete(client, monkeypatch):
     test_client, _ = client
     delete_calls = []

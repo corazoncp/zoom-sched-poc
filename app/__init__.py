@@ -188,6 +188,9 @@ def create_app(test_config: dict | None = None) -> Flask:
         if err:
             return err
 
+        if row["status"] == "payment_processing":
+            return jsonify({"error": "No se puede eliminar la sesión mientras el pago está siendo procesado."}), 409
+
         if row["zoom_meeting_id"]:
             token = zoom.get_access_token(body.credentials)
             zoom.delete_meeting(token, row["zoom_meeting_id"])
