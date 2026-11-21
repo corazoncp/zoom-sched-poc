@@ -196,9 +196,32 @@ def test_rate_limiting_blocks_brute_force(tmp_path: Path, monkeypatch):
     with app.test_client() as test_client:
         statuses = [
             test_client.post("/api/zoom/verify-credentials", json=SAMPLE_CREDS).status_code
-            for _ in range(12)
+            for _ in range(11)
         ]
-    assert 429 in statuses
+    assert statuses[:10] == [200] * 10
+    assert statuses[10] == 429
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "limit"),
+    [
+        ("POST", "/api/appointments", 15),
+        ("GET", "/api/appointments/ses_missing123", 20),
+        ("POST", "/api/appointments/ses_missing123/pay", 10),
+        ("DELETE", "/api/appointments/ses_missing123", 10),
+    ],
+)
+def test_sibling_endpoints_enforce_rate_limits(tmp_path: Path, method, path, limit):
+    db_file = tmp_path / "ratelimit_siblings.db"
+    app = create_app({"TESTING": True, "DB_PATH": str(db_file), "RATELIMIT_ENABLED": True})
+
+    with app.test_client() as test_client:
+        statuses = [
+            test_client.open(path, method=method, json={}).status_code
+            for _ in range(limit + 1)
+        ]
+    assert all(code != 429 for code in statuses[:limit])
+    assert statuses[limit] == 429
 
 
 def test_zoom_invalid_json_returns_502(client, monkeypatch):
