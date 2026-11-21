@@ -18,4 +18,4 @@ RUN mkdir -p /app/data
 
 EXPOSE 8000
 
-CMD ["uv", "run", "--no-dev", "gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "4", "app:create_app()"]
+CMD ["uv", "run", "--no-dev", "gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--threads", "4", "app:create_app()"]
