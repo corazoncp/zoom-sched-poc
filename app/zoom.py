@@ -65,6 +65,7 @@ def check_slot_availability(
     start_time_local: str,
     tz_name: str,
     duration_minutes: int = 60,
+    max_pages: int = 20,
 ) -> tuple[bool, str | None]:
     """Check upcoming Zoom meetings for overlapping time windows."""
     try:
@@ -81,7 +82,7 @@ def check_slot_availability(
     req_end = req_start + timedelta(minutes=duration_minutes)
 
     next_page_token = ""
-    while True:
+    for _ in range(max_pages):
         params: dict[str, object] = {"type": "upcoming", "page_size": 100}
         if next_page_token:
             params["next_page_token"] = next_page_token
@@ -100,11 +101,20 @@ def check_slot_availability(
             raise ZoomAPIError(resp.status_code, _extract_zoom_error(resp))
 
         data = _parse_json_dict(resp, "Meetings API")
-        for meeting in data.get("meetings", []):
-            raw_start = meeting.get("start_time")
-            if not raw_start:
+        for meeting in data.get("meetings") or []:
+            if not isinstance(meeting, dict):
                 continue
-            m_start = datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
+            raw_start = meeting.get("start_time")
+            if not isinstance(raw_start, str) or not raw_start:
+                continue
+            try:
+                m_start = datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if m_start.tzinfo is None:
+                m_start = m_start.replace(tzinfo=timezone.utc)
+            else:
+                m_start = m_start.astimezone(timezone.utc)
             duration = meeting.get("duration") or 60
             m_end = m_start + timedelta(minutes=duration)
             if req_start < m_end and req_end > m_start:
@@ -113,9 +123,9 @@ def check_slot_availability(
 
         next_page_token = data.get("next_page_token") or ""
         if not next_page_token:
-            break
+            return True, None
 
-    return True, None
+    raise ZoomAPIError(502, "Zoom Meetings pagination exceeded maximum page limit")
 
 
 def create_meeting(

@@ -426,6 +426,90 @@ def test_check_slot_availability_paginates_via_next_page_token(client, monkeypat
     assert seen_params[1].get("next_page_token") == "tok_page_2"
 
 
+def test_check_slot_availability_handles_null_meetings(client, monkeypatch):
+    test_client, _ = client
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(200, {"access_token": "mock_token"}),
+    )
+    monkeypatch.setattr(
+        zoom.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(200, {"meetings": None}),
+    )
+    resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+        },
+    )
+    assert resp.status_code == 201
+
+
+def test_check_slot_availability_handles_naive_and_malformed_start_times(client, monkeypatch):
+    test_client, _ = client
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(200, {"access_token": "mock_token"}),
+    )
+    monkeypatch.setattr(
+        zoom.requests,
+        "get",
+        lambda url, **kwargs: FakeResponse(
+            200,
+            {
+                "meetings": [
+                    {"topic": "Malformed", "start_time": "not-an-iso-date", "duration": 60},
+                    {"topic": "Naive", "start_time": "2026-11-24T10:00:00", "duration": 60},
+                ]
+            },
+        ),
+    )
+    resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+        },
+    )
+    assert resp.status_code == 201
+
+
+def test_check_slot_availability_caps_pagination_at_max_pages(client, monkeypatch):
+    test_client, _ = client
+    calls = []
+
+    monkeypatch.setattr(
+        zoom.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(200, {"access_token": "mock_token"}),
+    )
+
+    def fake_get(url, **kwargs):
+        calls.append(kwargs.get("params", {}))
+        if len(calls) > 25:
+            raise AssertionError("Pagination exceeded safe cap")
+        return FakeResponse(200, {"meetings": [], "next_page_token": f"tok_{len(calls)}"})
+
+    monkeypatch.setattr(zoom.requests, "get", fake_get)
+
+    resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "María Perez",
+            "start_time_local": "2026-11-25T15:00",
+        },
+    )
+    assert resp.status_code == 502
+    assert len(calls) == 20
+
+
 def test_create_meeting_missing_required_keys_returns_502(client, monkeypatch):
     test_client, _ = client
 
