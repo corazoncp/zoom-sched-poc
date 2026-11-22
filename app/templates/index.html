@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>El Corazón como Portal — Zoom Demo</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <nav class="step-nav" aria-label="Pasos de la demostración">
+    <a href="#step-config">1. Configuración</a>
+    <a href="#step-request">2. Solicitar Cita</a>
+    <a href="#step-lookup">3. Buscar Sesión</a>
+  </nav>
+
+  <!-- SCREEN 1: CONFIGURACIÓN (Servidor) -->
+  <section id="step-config" class="slide slide-mint">
+    <form id="config-form" class="slide-inner">
+      <h1 class="slide-title">CONFIGURACIÓN (Servidor)</h1>
+
+      <div class="field-row">
+        <label for="zoom-account-id">ZOOM_ACCOUNT_ID:</label>
+        <input id="zoom-account-id" type="password" autocomplete="off" placeholder="****" required />
+      </div>
+
+      <div class="field-row">
+        <label for="zoom-client-id">ZOOM_CLIENT_ID:</label>
+        <input id="zoom-client-id" type="password" autocomplete="off" placeholder="****" required />
+      </div>
+
+      <div class="field-row">
+        <label for="zoom-client-secret">ZOOM_CLIENT_SECRET:</label>
+        <input id="zoom-client-secret" type="password" autocomplete="off" placeholder="****" required />
+      </div>
+
+      <p class="hint">
+        Tus credenciales viven solo en la memoria de esta pestaña y nunca se guardan en la base de datos.
+      </p>
+
+      <div class="actions-center">
+        <button id="config-submit" class="btn btn-mint" type="submit">Conectar y Continuar</button>
+      </div>
+
+      <div id="config-feedback" class="feedback" role="status"></div>
+    </form>
+  </section>
+
+  <!-- SCREEN 2: SOLICITAR UNA CITA (Como cliente) -->
+  <section id="step-request" class="slide slide-blue">
+    <form id="request-form" class="slide-inner">
+      <h1 class="slide-title">SOLICITAR UNA CITA (Como cliente)</h1>
+
+      <div class="field-row">
+        <label for="client-name">USER NAME:</label>
+        <input id="client-name" type="text" placeholder="María Perez" required minlength="2" />
+      </div>
+
+      <div class="card">
+        <div class="card-header">Enter Date/Time</div>
+        <input id="start-time" type="datetime-local" required />
+        <div class="actions-center">
+          <button id="request-submit" class="btn btn-blue" type="submit">VERIFICAR</button>
+        </div>
+      </div>
+
+      <div id="request-feedback" class="feedback" role="status"></div>
+    </form>
+  </section>
+
+  <!-- SCREEN 3: BUSCAR SESIÓN -->
+  <section id="step-lookup" class="slide slide-taupe">
+    <div class="slide-inner">
+      <h1 class="slide-title">BUSCAR SESIÓN</h1>
+
+      <form id="lookup-form" class="card">
+        <div class="card-header">session_id or payment_id</div>
+        <input id="lookup-id" type="text" placeholder="ses_540242" required />
+        <div class="actions-center">
+          <button id="lookup-submit" class="btn btn-taupe" type="submit">BUSCAR</button>
+        </div>
+      </form>
+
+      <div id="lookup-feedback" class="feedback" role="status"></div>
+      <div id="session-result" class="session-result" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <script>
+    const state = {
+      credentials: null,
+      lastSessionId: null,
+    };
+
+    function setDefaultDateTime() {
+      const input = document.getElementById("start-time");
+      const now = new Date();
+      now.setDate(now.getDate() + 2);
+      now.setHours(15, 0, 0, 0);
+      const pad = (n) => String(n).padStart(2, "0");
+      input.value = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:00`;
+    }
+    setDefaultDateTime();
+
+    function showFeedback(el, type, html) {
+      el.className = `feedback visible ${type}`;
+      el.innerHTML = html;
+    }
+
+    function clearFeedback(el) {
+      el.className = "feedback";
+      el.innerHTML = "";
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function safeHttpUrl(url) {
+      try {
+        const parsed = new URL(String(url ?? ""));
+        return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function readCredentialsFromInputs() {
+      return {
+        account_id: document.getElementById("zoom-account-id").value.trim(),
+        client_id: document.getElementById("zoom-client-id").value.trim(),
+        client_secret: document.getElementById("zoom-client-secret").value,
+      };
+    }
+
+    function ensureCredentials() {
+      if (state.credentials) return state.credentials;
+      const creds = readCredentialsFromInputs();
+      if (creds.account_id && creds.client_id && creds.client_secret) {
+        state.credentials = creds;
+        return creds;
+      }
+      document.getElementById("step-config").scrollIntoView({ behavior: "smooth" });
+      return null;
+    }
+
+    // Screen 1: Verify Zoom credentials in memory
+    document.getElementById("config-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById("config-submit");
+      const fb = document.getElementById("config-feedback");
+      clearFeedback(fb);
+
+      const creds = readCredentialsFromInputs();
+      btn.disabled = true;
+      btn.textContent = "Verificando...";
+
+      try {
+        const resp = await fetch("/api/zoom/verify-credentials", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(creds),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          showFeedback(fb, "error", `Error de Zoom: ${escapeHtml(data.error || "Credenciales inválidas")}`);
+          return;
+        }
+        state.credentials = creds;
+        showFeedback(fb, "success", "Credenciales verificadas. Avanzando al siguiente paso...");
+        setTimeout(() => {
+          document.getElementById("step-request").scrollIntoView({ behavior: "smooth" });
+        }, 650);
+      } catch (err) {
+        showFeedback(fb, "error", `Error de red: ${escapeHtml(err.message)}`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Conectar y Continuar";
+      }
+    });
+
+    // Screen 2: Check availability and create payment_pending appointment
+    document.getElementById("request-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById("request-submit");
+      const fb = document.getElementById("request-feedback");
+      clearFeedback(fb);
+
+      const creds = ensureCredentials();
+      if (!creds) {
+        showFeedback(fb, "error", "Primero ingresa y verifica tus credenciales de Zoom arriba.");
+        return;
+      }
+
+      const clientName = document.getElementById("client-name").value.trim();
+      const startTimeLocal = document.getElementById("start-time").value;
+
+      btn.disabled = true;
+      btn.textContent = "Verificando...";
+
+      try {
+        const resp = await fetch("/api/appointments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            credentials: creds,
+            client_name: clientName,
+            start_time_local: startTimeLocal,
+            timezone: "America/Bogota",
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          showFeedback(fb, "error", escapeHtml(data.error || "No se pudo verificar el horario."));
+          return;
+        }
+
+        state.lastSessionId = data.session_id;
+        document.getElementById("lookup-id").value = data.session_id;
+        showFeedback(
+          fb,
+          "success",
+          `<strong>Horario disponible.</strong> Solicitud creada como <code>payment_pending</code>.<br>` +
+            `Session ID: <code>${escapeHtml(data.session_id)}</code> · Payment ID: <code>${escapeHtml(data.payment_id)}</code>`
+        );
+
+        setTimeout(() => {
+          document.getElementById("step-lookup").scrollIntoView({ behavior: "smooth" });
+        }, 1200);
+      } catch (err) {
+        showFeedback(fb, "error", `Error de red: ${escapeHtml(err.message)}`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "VERIFICAR";
+      }
+    });
+
+    // Screen 3: Lookup session / pay / view confirmed Zoom meeting
+    async function lookupSession(lookupId) {
+      const fb = document.getElementById("lookup-feedback");
+      const resultEl = document.getElementById("session-result");
+      clearFeedback(fb);
+      resultEl.className = "session-result";
+      resultEl.innerHTML = "";
+
+      try {
+        const resp = await fetch(`/api/appointments/${encodeURIComponent(lookupId)}`);
+        const data = await resp.json();
+        if (!resp.ok) {
+          showFeedback(fb, "error", escapeHtml(data.error || "No encontrado."));
+          return;
+        }
+        renderAppointment(data);
+      } catch (err) {
+        showFeedback(fb, "error", `Error de red: ${escapeHtml(err.message)}`);
+      }
+    }
+
+    function renderAppointment(appt) {
+      const resultEl = document.getElementById("session-result");
+      const fb = document.getElementById("lookup-feedback");
+      clearFeedback(fb);
+
+      const isConfirmed = appt.status === "confirmed";
+      const badge = isConfirmed
+        ? `<span class="badge badge-confirmed">Confirmada</span>`
+        : `<span class="badge badge-pending">Pendiente de pago</span>`;
+
+      let extraHtml = "";
+      if (!isConfirmed) {
+        extraHtml = `
+          <div class="actions-center">
+            <button id="pay-btn" class="btn btn-mint" type="button">Proceder al pago ($${Number(appt.amount_usd).toFixed(2)})</button>
+            <button id="decline-btn" class="btn btn-secondary" type="button">Cancelar</button>
+          </div>
+        `;
+      } else {
+        const safeJoinUrl = safeHttpUrl(appt.zoom_join_url);
+        const safeStartUrl = safeHttpUrl(appt.zoom_start_url);
+        const joinLinkHtml = safeJoinUrl
+          ? `<a href="${escapeHtml(safeJoinUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(safeJoinUrl)}</a>`
+          : `<span>${escapeHtml(appt.zoom_join_url || "No disponible")}</span>`;
+        const startLinkHtml = !appt.zoom_start_url
+          ? `<span>Disponible solo al confirmar el pago (requiere credenciales de anfitriona)</span>`
+          : safeStartUrl
+            ? `<a href="${escapeHtml(safeStartUrl)}" target="_blank" rel="noopener noreferrer">Abrir como anfitriona (privado)</a>`
+            : `<span>Enlace no válido</span>`;
+        extraHtml = `
+          <ul class="meta-list">
+            <li><strong>Zoom Meeting ID:</strong> <code>${escapeHtml(appt.zoom_meeting_id)}</code></li>
+            <li><strong>Link cliente:</strong> ${joinLinkHtml}</li>
+            <li><strong>Link anfitriona:</strong> ${startLinkHtml}</li>
+          </ul>
+          <div class="actions-center">
+            <button id="delete-btn" class="btn btn-danger" type="button">Eliminar reunión de prueba</button>
+          </div>
+        `;
+      }
+
+      resultEl.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+          <strong>${escapeHtml(appt.client_name)}</strong>
+          ${badge}
+        </div>
+        <ul class="meta-list">
+          <li><strong>Session ID:</strong> <code>${escapeHtml(appt.session_id)}</code></li>
+          <li><strong>Payment ID:</strong> <code>${escapeHtml(appt.payment_id)}</code></li>
+          <li><strong>Fecha y hora:</strong> ${escapeHtml(appt.start_time_local)} (${escapeHtml(appt.timezone)})</li>
+        </ul>
+        ${extraHtml}
+      `;
+      resultEl.className = "session-result visible";
+
+      if (!isConfirmed) {
+        document.getElementById("pay-btn").addEventListener("click", () => payAppointment(appt.session_id));
+        document.getElementById("decline-btn").addEventListener("click", () => {
+          showFeedback(fb, "info", "Pago no realizado. La cita sigue en estado <code>payment_pending</code> y no se creó ninguna reunión en Zoom.");
+        });
+      } else {
+        document.getElementById("delete-btn").addEventListener("click", () => deleteAppointment(appt.session_id));
+      }
+    }
+
+    async function payAppointment(sessionId) {
+      const fb = document.getElementById("lookup-feedback");
+      const btn = document.getElementById("pay-btn");
+      const creds = ensureCredentials();
+      if (!creds) {
+        showFeedback(fb, "error", "Primero ingresa tus credenciales de Zoom en el Paso 1.");
+        return;
+      }
+
+      const originalLabel = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Procesando...";
+
+      try {
+        const resp = await fetch(`/api/appointments/${encodeURIComponent(sessionId)}/pay`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ credentials: creds }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          showFeedback(fb, "error", escapeHtml(data.error || "Error al confirmar el pago."));
+          btn.disabled = false;
+          btn.textContent = originalLabel;
+          return;
+        }
+        renderAppointment(data);
+        showFeedback(fb, "success", "Pago registrado y reunión de Zoom creada. Si buscas este mismo Session ID de nuevo, verás esta misma sesión.");
+      } catch (err) {
+        showFeedback(fb, "error", `Error de red: ${escapeHtml(err.message)}`);
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+      }
+    }
+
+    async function deleteAppointment(sessionId) {
+      const fb = document.getElementById("lookup-feedback");
+      const btn = document.getElementById("delete-btn");
+      const creds = ensureCredentials();
+      if (!creds) {
+        showFeedback(fb, "error", "Primero ingresa tus credenciales de Zoom en el Paso 1.");
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = "Eliminando...";
+
+      try {
+        const resp = await fetch(`/api/appointments/${encodeURIComponent(sessionId)}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ credentials: creds }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          showFeedback(fb, "error", escapeHtml(data.error || "No se pudo eliminar."));
+          btn.disabled = false;
+          btn.textContent = "Eliminar reunión de prueba";
+          return;
+        }
+        document.getElementById("session-result").className = "session-result";
+        document.getElementById("lookup-id").value = "";
+        showFeedback(fb, "success", `Reunión de prueba <code>${escapeHtml(sessionId)}</code> eliminada.`);
+      } catch (err) {
+        showFeedback(fb, "error", `Error de red: ${escapeHtml(err.message)}`);
+        btn.disabled = false;
+        btn.textContent = "Eliminar reunión de prueba";
+      }
+    }
+
+    document.getElementById("lookup-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById("lookup-submit");
+      const lookupId = document.getElementById("lookup-id").value.trim();
+      btn.disabled = true;
+      btn.textContent = "Buscando...";
+      try {
+        await lookupSession(lookupId);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "BUSCAR";
+      }
+    });
+  </script>
+</body>
+</html>
