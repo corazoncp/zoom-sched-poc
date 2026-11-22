@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-21
-- **Context:** `zoom-sched-poc` is a public-facing proof-of-concept demo allowing Azu to test end-to-end Zoom scheduling with her own Server-to-Server OAuth app without deploying an authentication gateway (Authelia) or persisting third-party secrets on the homelab server.
+- **Context:** `zoom-sched-poc` is a standalone proof-of-concept demo allowing a host to test end-to-end Zoom scheduling with a Server-to-Server OAuth app without deploying an authentication layer or persisting third-party secrets on the server.
 
 ## Decision
 1. **Transient browser-memory credentials:** Zoom `account_id`, `client_id`, and `client_secret` are entered in Screen 1, held solely in browser tab memory, and transmitted per request over HTTPS (`SecretStr` in Pydantic). They are never stored in SQLite, session cookies, or server environment files.

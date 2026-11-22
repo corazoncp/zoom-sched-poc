@@ -1,15 +1,14 @@
 # Architecture — `zoom-sched-poc`
 
-Canonical present-state architecture for the **zoom-sched-poc** proof-of-concept (`feat/zoom-sched-poc`).
+Canonical present-state architecture for the **zoom-sched-poc** proof-of-concept.
 
 ## System Topology
 
-Single-container Flask + Gunicorn (`--workers 1 --threads 4`) application serving both the static 3-screen presentation UI and the JSON REST API behind a reverse proxy (Traefik).
+Single-container Flask + Gunicorn (`--workers 1 --threads 4`) application serving both the static 3-screen presentation UI and the JSON REST API, with `ProxyFix` enabled for standard `X-Forwarded-*` headers when run behind an optional reverse proxy.
 
 ```mermaid
 flowchart LR
-  Browser["Browser (3-Screen SPA)<br/>Credentials in tab memory"] -->|HTTPS| Proxy["Reverse Proxy (Traefik)"]
-  Proxy -->|X-Forwarded-*| Flask["Flask App (ProxyFix + Limiter)<br/>MAX_CONTENT_LENGTH: 64 KiB"]
+  Browser["Browser (3-Screen SPA)<br/>Credentials in tab memory"] -->|HTTP / HTTPS| Flask["Flask + Gunicorn (ProxyFix + Limiter)<br/>MAX_CONTENT_LENGTH: 64 KiB"]
   Flask --> DB[("SQLite WAL<br/>/app/data/appointments.db")]
   Flask -->|HTTPS Bearer / Basic| Zoom["Zoom REST & OAuth API"]
 ```
