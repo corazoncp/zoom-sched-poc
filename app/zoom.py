@@ -137,6 +137,21 @@ def create_meeting(
 ) -> dict:
     """Create a scheduled Zoom meeting on the account owner's calendar."""
     try:
+        local_tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError as exc:
+        raise ZoomAPIError(400, f"Invalid timezone: {tz_name}") from exc
+
+    try:
+        parsed = datetime.fromisoformat(start_time_local)
+    except ValueError as exc:
+        raise ZoomAPIError(400, "Invalid date/time format. Expected YYYY-MM-DDTHH:MM") from exc
+
+    # Zoom Create Meeting API requires seconds (yyyy-MM-ddTHH:mm:ss) when timezone is set;
+    # HTML datetime-local omits seconds (YYYY-MM-DDTHH:MM), causing Zoom to default to now.
+    local_dt = parsed.astimezone(local_tz) if parsed.tzinfo is not None else parsed
+    formatted_start = local_dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+    try:
         resp = requests.post(
             "https://api.zoom.us/v2/users/me/meetings",
             headers={
@@ -146,7 +161,7 @@ def create_meeting(
             json={
                 "topic": topic,
                 "type": 2,
-                "start_time": start_time_local,
+                "start_time": formatted_start,
                 "duration": duration_minutes,
                 "timezone": tz_name,
                 "settings": {

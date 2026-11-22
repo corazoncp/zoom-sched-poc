@@ -697,6 +697,33 @@ def test_pay_appointment_forwards_duration_to_zoom(client, monkeypatch):
     assert captured_payloads[0]["duration"] == 45
 
 
+def test_pay_appointment_formats_start_time_with_seconds_for_zoom(client, monkeypatch):
+    test_client, _ = client
+    captured_payloads = []
+    _mock_zoom_happy_path(monkeypatch, create_calls=captured_payloads)
+
+    c_resp = test_client.post(
+        "/api/appointments",
+        json={
+            "credentials": SAMPLE_CREDS,
+            "client_name": "Jorge Paez",
+            "start_time_local": "2026-11-22T16:00",
+            "timezone": "America/Bogota",
+        },
+    )
+    assert c_resp.status_code == 201
+    sid = c_resp.get_json()["session_id"]
+
+    p_resp = test_client.post(
+        f"/api/appointments/{sid}/pay",
+        json={"credentials": SAMPLE_CREDS},
+    )
+    assert p_resp.status_code == 200
+    assert len(captured_payloads) == 1
+    assert captured_payloads[0]["start_time"] == "2026-11-22T16:00:00"
+    assert captured_payloads[0]["timezone"] == "America/Bogota"
+
+
 def test_concurrent_pay_creates_only_one_zoom_meeting(tmp_path: Path, monkeypatch):
     db_file = tmp_path / "concurrent_pay.db"
     app = create_app({"TESTING": True, "DB_PATH": str(db_file), "RATELIMIT_ENABLED": False})
